@@ -1,13 +1,13 @@
 {
-  "direction_accuracy": 0.5094,
-  "rank_ic": 0.0029,
-  "rank_ic_ir": 0.0194,
-  "top_k_win_rate": 0.5228,
-  "top_k_avg_return": -0.003,
-  "top_k_total_return": -0.4847,
-  "max_drawdown": -0.7314,
+  "direction_accuracy": 0.5002,
+  "rank_ic": 0.0157,
+  "rank_ic_ir": 0.0916,
+  "top_k_win_rate": 0.4772,
+  "top_k_avg_return": -0.0025,
+  "top_k_total_return": -0.4104,
+  "max_drawdown": -0.611,
   "n_test_days": 197,
-  "passed": false,
+  "passed": true,
   "lstm_valid_ic": 0.0,
   "thresholds": {
     "min_direction_accuracy": 0.5,
@@ -16,23 +16,63 @@
   },
   "model_config": {
     "enabled": {
-      "b1": true,
-      "b2": true,
-      "lgb": true,
-      "lstm": false
+      "b1": false,
+      "b2": false,
+      "lgb": false,
+      "lstm": false,
+      "linear": false,
+      "ridge": true,
+      "lasso": false,
+      "elasticnet": false,
+      "rf": false,
+      "xgb": false,
+      "catboost": false,
+      "double_ensemble": false,
+      "gru": false,
+      "alstm": false,
+      "transformer": false,
+      "mlp_seq": false
     },
     "weights": {
-      "b1": 0.25,
-      "b2": 0.4,
-      "lgb": 0.25,
-      "lstm": 0.3
+      "b1": 0.2,
+      "b2": 0.15,
+      "lgb": 0.2,
+      "lstm": 0.25,
+      "linear": 0.0,
+      "ridge": 0.2,
+      "lasso": 0.0,
+      "elasticnet": 0.0,
+      "rf": 0.0,
+      "xgb": 0.0,
+      "catboost": 0.0,
+      "double_ensemble": 0.0,
+      "gru": 0.0,
+      "alstm": 0.0,
+      "transformer": 0.0,
+      "mlp_seq": 0.0
     },
     "normalized": {
-      "b1": 0.2777777777777778,
-      "b2": 0.4444444444444445,
-      "lgb": 0.2777777777777778,
-      "lstm": 0.0
+      "b1": 0.0,
+      "b2": 0.0,
+      "lgb": 0.0,
+      "lstm": 0.0,
+      "linear": 0.0,
+      "ridge": 1.0,
+      "lasso": 0.0,
+      "elasticnet": 0.0,
+      "rf": 0.0,
+      "xgb": 0.0,
+      "catboost": 0.0,
+      "double_ensemble": 0.0,
+      "gru": 0.0,
+      "alstm": 0.0,
+      "transformer": 0.0,
+      "mlp_seq": 0.0
     },
-    "summary": "B1 缩量战法 28% + B2 放量启动 44% + LightGBM 表格模型 28%"
-  }
+    "summary": "Qlib Ridge 100%",
+    "active": [
+      "ridge"
+    ]
+  },
+  "data_asof": "2026-07-09"
 }
