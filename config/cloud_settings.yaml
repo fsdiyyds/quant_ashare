@@ -1,0 +1,78 @@
+# 云端部署专用配置（GitHub Actions / Render / Streamlit Cloud）
+
+b1:
+  top_n: 520
+  min_score: 35
+  j_threshold: 15
+  j_best: 13
+  exclude_st: true
+
+lstm:
+  seq_len: 30
+  forward_days: 5
+  epochs: 15          # 云端缩短训练轮数
+  batch_size: 128
+  top_k: 50
+
+b2:
+  up_pct_threshold: 0.05
+  vol_multiple: 1.5
+  lookback_n: 10
+
+ensemble:
+  enabled:
+    b1: true
+    b2: true
+    lgb: true
+    lstm: true
+    # 云端默认可开轻量 Qlib 表格（不额外依赖）
+    ridge: true
+    rf: false
+    xgb: false
+    catboost: false
+    double_ensemble: false
+    linear: false
+    lasso: false
+    elasticnet: false
+    gru: false
+    alstm: false
+    transformer: false
+    mlp_seq: false
+  weights:
+    b1: 0.20
+    b2: 0.15
+    lgb: 0.20
+    lstm: 0.25
+    ridge: 0.20
+    rf: 0.0
+    xgb: 0.0
+    catboost: 0.0
+    double_ensemble: 0.0
+    linear: 0.0
+    lasso: 0.0
+    elasticnet: 0.0
+    gru: 0.0
+    alstm: 0.0
+    transformer: 0.0
+    mlp_seq: 0.0
+
+backtest:
+  train_ratio: 0.60
+  valid_ratio: 0.15
+  min_direction_accuracy: 0.50
+  min_rank_ic: 0.015
+  min_top_k_win_rate: 0.42
+  require_pass_to_recommend: false
+
+data:
+  start_date: "2023-01-01"
+  cache_dir: data/cache
+  workers: 6
+  use_parallel: true
+  max_stocks: 2500    # 云端限制扫描数量，避免超时（约 30~60 分钟）
+  force_refresh: true # 每日自动任务强制刷新最新成交
+
+output:
+  dir: output/b1_lstm
+
+# 环境变量 QUANT_DATA_SOURCE=sina  强制使用新浪数据源

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# 本地大缓存 / 模型（云端每次重新拉取）
+data/cache/*.pkl
+data/cache/*.parquet
+*.keras
+*.h5
+
+# Streamlit 密钥
+.streamlit/secrets.toml
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 运行时临时配置
+output/runtime_config.yaml
+
+# 带时间戳的中间产物（保留 output/latest/ 供展示）
+output/b1_lstm/charts/
+output/b1_lstm/top50_buy_*.csv
+output/b1_lstm/b1_pool_*.csv
+output/b1_lstm/report_*.md
+output/b1_lstm/b1_lstm_report_*.md

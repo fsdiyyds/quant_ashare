@@ -1,0 +1,34 @@
+# A股量化分析配置（参考 Qlib Alpha158 / quant-ashare 思路）
+
+data:
+  # 股票池: hs300 | zz500 | all_a | custom
+  universe: hs300
+  custom_codes: []          # universe=custom 时填写，如 ["600519", "000858"]
+  start_date: "2022-01-01"
+  end_date: null            # null = 今天
+  cache_dir: data/cache
+
+model:
+  # 预测未来 N 日收益率（标签）
+  forward_days: 5
+  # lightgbm | random_forest | gradient_boosting
+  algorithm: lightgbm
+  train_ratio: 0.8
+  # 滚动训练窗口（交易日）
+  lookback_days: 252
+
+strategy:
+  top_k: 10                 # 每日推荐前 K 只
+  min_score: 0.0            # 预测得分下限
+  exclude_st: true          # 排除 ST
+  exclude_limit: true       # 排除涨跌停（训练样本过滤）
+
+backtest:
+  initial_cash: 1000000
+  commission: 0.0003        # 单边佣金
+  stamp_tax: 0.001          # 卖出印花税
+  slippage: 0.001           # 滑点
+
+output:
+  dir: output
+  report_name: daily_report

@@ -1,0 +1,83 @@
+# B1+B2+多模型 量化选股配置
+
+b1:
+  top_n: 520
+  min_score: 35
+  j_threshold: 15
+  j_best: 13
+  price_range_pct: 1.0
+  exclude_st: true
+  exclude_gem: false
+  exclude_star: false
+
+b2:
+  up_pct_threshold: 0.05      # B2 涨幅阈值 5%
+  vol_multiple: 1.5           # 成交量 >= B1阶段最大量 × 1.5
+  lookback_n: 10              # B1 调整窗口
+  j_threshold: 15
+
+lstm:
+  seq_len: 30
+  forward_days: 5
+  epochs: 20
+  batch_size: 64
+  top_k: 50
+
+ensemble:
+  # 原生模型 + Qlib 风格模型（参考 microsoft/qlib Model Zoo）
+  # 可在 Streamlit / CLI --models 中选取组合
+  enabled:
+    b1: true
+    b2: true
+    lgb: true
+    lstm: true
+    # Qlib 表格
+    linear: false
+    ridge: false
+    lasso: false
+    elasticnet: false
+    rf: false
+    xgb: false
+    catboost: false
+    double_ensemble: false
+    # Qlib 时序
+    gru: false
+    alstm: false
+    transformer: false
+    mlp_seq: false
+  weights:
+    b1: 0.25                  # B1 规则得分
+    b2: 0.20                  # B2 放量得分
+    lgb: 0.25                 # LightGBM
+    lstm: 0.30                # LSTM
+    linear: 0.0
+    ridge: 0.0
+    lasso: 0.0
+    elasticnet: 0.0
+    rf: 0.0
+    xgb: 0.0
+    catboost: 0.0
+    double_ensemble: 0.0
+    gru: 0.0
+    alstm: 0.0
+    transformer: 0.0
+    mlp_seq: 0.0
+
+backtest:
+  train_ratio: 0.60           # 训练集 60%
+  valid_ratio: 0.15           # 验证集 15%
+  # 测试集 25%
+  min_direction_accuracy: 0.52   # 方向准确率门槛
+  min_rank_ic: 0.02                # Rank IC 门槛
+  min_top_k_win_rate: 0.45         # Top-K 日胜率门槛
+  require_pass_to_recommend: true  # 未通过仍输出但标记低置信度
+
+data:
+  start_date: "2023-01-01"
+  cache_dir: data/cache
+  workers: 8
+  use_parallel: true
+  force_refresh: true         # 每次运行增量拉取最新成交
+
+output:
+  dir: output/b1_lstm

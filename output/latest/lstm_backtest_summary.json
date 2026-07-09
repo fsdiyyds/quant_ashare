@@ -1,0 +1,8 @@
+{
+  "n_points": 1700,
+  "mae_price": 1.0474,
+  "mape_pct": 5.86,
+  "direction_accuracy": 0.6206,
+  "return_correlation": 0.5006,
+  "mean_error_pct": -0.63
+}

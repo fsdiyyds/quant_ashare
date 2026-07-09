@@ -1,0 +1,38 @@
+{
+  "direction_accuracy": 0.5094,
+  "rank_ic": 0.0029,
+  "rank_ic_ir": 0.0194,
+  "top_k_win_rate": 0.5228,
+  "top_k_avg_return": -0.003,
+  "top_k_total_return": -0.4847,
+  "max_drawdown": -0.7314,
+  "n_test_days": 197,
+  "passed": false,
+  "lstm_valid_ic": 0.0,
+  "thresholds": {
+    "min_direction_accuracy": 0.5,
+    "min_rank_ic": 0.015,
+    "min_top_k_win_rate": 0.42
+  },
+  "model_config": {
+    "enabled": {
+      "b1": true,
+      "b2": true,
+      "lgb": true,
+      "lstm": false
+    },
+    "weights": {
+      "b1": 0.25,
+      "b2": 0.4,
+      "lgb": 0.25,
+      "lstm": 0.3
+    },
+    "normalized": {
+      "b1": 0.2777777777777778,
+      "b2": 0.4444444444444445,
+      "lgb": 0.2777777777777778,
+      "lstm": 0.0
+    },
+    "summary": "B1 缩量战法 28% + B2 放量启动 44% + LightGBM 表格模型 28%"
+  }
+}

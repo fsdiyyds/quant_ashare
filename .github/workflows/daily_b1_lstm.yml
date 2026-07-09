@@ -1,0 +1,86 @@
+name: B1 LSTM Daily Pick
+
+on:
+  schedule:
+    # 北京时间 周一~周五 18:00（UTC 10:00）
+    - cron: "0 10 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      max_stocks:
+        description: "扫描股票数（留空用 cloud_settings）"
+        required: false
+        default: ""
+      models:
+        description: "启用模型逗号分隔，如 b1,b2,lgb,lstm,ridge"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  run-b1-lstm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run daily train + recommend
+        env:
+          QUANT_DATA_SOURCE: sina
+          TF_CPP_MIN_LOG_LEVEL: "2"
+        run: |
+          EXTRA=""
+          if [ -n "${{ github.event.inputs.max_stocks }}" ]; then
+            EXTRA="$EXTRA --max-stocks ${{ github.event.inputs.max_stocks }}"
+          fi
+          if [ -n "${{ github.event.inputs.models }}" ]; then
+            EXTRA="$EXTRA --models ${{ github.event.inputs.models }}"
+          fi
+          python -u b1_lstm_daily.py \
+            --config config/cloud_settings.yaml \
+            --force-refresh \
+            --skip-backtest-gate \
+            $EXTRA
+
+      - name: Sync latest results
+        run: |
+          mkdir -p output/latest
+          LATEST_TOP=$(ls -t output/b1_lstm/top50_buy_*.csv 2>/dev/null | head -1 || true)
+          LATEST_POOL=$(ls -t output/b1_lstm/b1_pool_*.csv 2>/dev/null | head -1 || true)
+          LATEST_MD=$(ls -t output/b1_lstm/report_*.md 2>/dev/null | head -1 || true)
+          [ -n "$LATEST_TOP" ] && cp "$LATEST_TOP" output/latest/top50_latest.csv
+          [ -n "$LATEST_POOL" ] && cp "$LATEST_POOL" output/latest/b1_pool_latest.csv
+          [ -n "$LATEST_MD" ] && cp "$LATEST_MD" output/latest/report_latest.md
+          [ -f output/b1_lstm/report_visual_latest.html ] && cp output/b1_lstm/report_visual_latest.html output/latest/report_visual.html
+          [ -f output/b1_lstm/backtest_metrics.json ] && cp output/b1_lstm/backtest_metrics.json output/latest/backtest_metrics.json
+          ls -la output/latest/ || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: b1-lstm-results
+          path: |
+            output/b1_lstm/
+            output/latest/
+          retention-days: 30
+
+      - name: Commit latest results to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add output/latest/ || true
+          git diff --staged --quiet || git commit -m "chore: update daily picks [skip ci]"
+          git push || true
