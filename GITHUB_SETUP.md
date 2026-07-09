@@ -61,13 +61,16 @@ git push -u origin main
 | Repository | `fsdiyyds/quant_ashare` |
 | Branch | `main` |
 | Main file path | `streamlit_app.py` |
-| Python version | `3.10` |
+| Python version | **务必在 Advanced settings 选 `3.11` 或 `3.12`**（不要用 3.14） |
 
 Secrets：
 
 ```toml
 QUANT_DATA_SOURCE = "sina"
 ```
+
+> `requirements.txt` 已去掉 TensorFlow，即使误选 3.14 也能装依赖并展示结果。  
+> LSTM 训练请用 GitHub Actions（`requirements-train.txt`，Python 3.11）。
 
 ---
 

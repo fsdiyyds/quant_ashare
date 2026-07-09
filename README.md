@@ -33,8 +33,10 @@ python b1_lstm_daily.py --max-stocks 200
 | **Google Colab** | 零部署手动跑 |
 | **Render Docker** | 容器托管 |
 
-**Streamlit 快速部署：** 推送独立仓库 → https://share.streamlit.io → Main file: `streamlit_app.py` → Secret: `QUANT_DATA_SOURCE=sina`  
-仓库示例：https://github.com/fsdiyyds/quant_ashare
+**Streamlit 快速部署：** https://share.streamlit.io → Main file: `streamlit_app.py` → Python **3.11** → Secret: `QUANT_DATA_SOURCE=sina`  
+仓库：https://github.com/fsdiyyds/quant_ashare  
+
+> Cloud 展示用 `requirements.txt`（无 TensorFlow）；完整训练用 `pip install -r requirements-train.txt`（需 Python ≤3.12）。
 
 ---
 

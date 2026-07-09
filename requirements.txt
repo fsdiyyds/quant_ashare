@@ -1,3 +1,6 @@
+# Streamlit Cloud / 轻量展示依赖（兼容 Python 3.10–3.14）
+# 训练用深度学习请见 requirements-train.txt（GitHub Actions / 本地）
+
 akshare>=1.14.0; python_version >= "3.9"
 requests>=2.28.0
 pandas>=1.5.0
@@ -7,19 +10,15 @@ lightgbm>=4.0.0
 pyyaml>=6.0
 matplotlib>=3.7.0
 tabulate>=0.9.0
-
-# LSTM / Qlib 时序模型（GRU / ALSTM / Transformer）
-tensorflow>=2.10.0; python_version >= "3.8"
 streamlit>=1.28.0
 plotly>=5.18.0
 scipy>=1.10.0
 tqdm>=4.66.0
 
-# Qlib 风格表格模型（可选，未安装则对应模型自动跳过）
+# 表格模型（可选；安装失败不影响展示）
 xgboost>=2.0.0
-catboost>=1.2.0
 
-# Python 3.8 用户: akshare 不可用，脚本会自动使用东方财富直连 + requests
-# 建议升级到 Python 3.10+ 以获得完整 akshare 支持
-# 完整 Qlib 平台（可选，本项目已内置轻量 Zoo，不强制）:
-#   pip install pyqlib
+# 说明：
+# - TensorFlow / CatBoost 不放在此文件，避免 Streamlit Cloud 默认 Python 3.14 装不上
+# - 云端训练请用 GitHub Actions（会安装 requirements-train.txt）
+# - 本地完整训练: pip install -r requirements-train.txt
