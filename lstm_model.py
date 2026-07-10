@@ -144,14 +144,25 @@ def train_lstm(
     epochs: int = 30,
     batch_size: int = 64,
     train_ratio: float = 0.8,
+    min_samples: int = 100,
 ) -> LSTMResult:
-    if len(X) < 100:
-        raise ValueError(f"LSTM 训练样本不足: {len(X)}，至少需要 100 条")
+    if not HAS_TF:
+        raise ImportError(
+            "未安装 tensorflow。Streamlit Cloud 请选 Python 3.11/3.12；"
+            "本地执行: pip install 'tensorflow>=2.15,<2.20'"
+        )
+    if len(X) < min_samples:
+        raise ValueError(f"LSTM 训练样本不足: {len(X)}，至少需要 {min_samples} 条")
 
     n = len(X)
     cut = int(n * train_ratio)
+    # 保证验证集至少有几条
+    if n - cut < 5:
+        cut = max(n - 5, int(n * 0.7))
     X_train, X_valid = X[:cut], X[cut:]
     y_train, y_valid = y[:cut], y[cut:]
+    if len(X_train) < 10 or len(X_valid) < 3:
+        raise ValueError(f"LSTM 划分后样本过少: train={len(X_train)} valid={len(X_valid)}")
 
     model = _build_lstm_model(seq_len, X.shape[2])
     es = callbacks.EarlyStopping(patience=5, restore_best_weights=True, monitor="val_loss")
@@ -174,7 +185,7 @@ def train_lstm(
         X_train, y_train,
         validation_data=(X_valid, y_valid),
         epochs=epochs,
-        batch_size=batch_size,
+        batch_size=min(batch_size, max(8, len(X_train))),
         callbacks=cb,
         verbose=0,
     )

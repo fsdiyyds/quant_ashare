@@ -246,45 +246,64 @@ def _train_eval_seq(
 ) -> Tuple[Optional[Any], pd.DataFrame, float]:
     """训练时序模型，返回 model, backtest_hist, future_pred_return。"""
     if not HAS_TF:
-        return None, pd.DataFrame(), 0.0
+        raise ImportError(
+            "未安装 tensorflow。Streamlit 请选 Python 3.11/3.12；"
+            "本地: pip install 'tensorflow>=2.15,<2.20'"
+        )
 
     from lstm_model import build_lstm_sequences, train_lstm
 
+    print(f"  [{key}] 构建序列特征...", flush=True)
     X, y, _ = build_lstm_sequences(hist, seq_len=seq_len, forward_days=forward_days)
+    print(f"  [{key}] 序列样本数={len(X)}", flush=True)
     if len(X) < 40:
-        return None, pd.DataFrame(), 0.0
+        raise ValueError(f"时序样本不足: {len(X)}（至少 40），请拉长历史或换股票")
 
     split = max(int(len(X) * train_ratio), 30)
     if len(X) - split < 8:
-        return None, pd.DataFrame(), 0.0
+        split = max(len(X) - 8, int(len(X) * 0.7))
+    if split < 20:
+        raise ValueError(f"划分后训练样本过少: train={split} test={len(X)-split}")
 
     X_tr, y_tr = X[:split], y[:split]
     X_te = X[split:]
+    print(f"  [{key}] 训练={len(X_tr)} 测试={len(X_te)} epochs={epochs}", flush=True)
 
     if key == "lstm":
-        result = train_lstm(X_tr, y_tr, seq_len=seq_len, epochs=epochs, batch_size=32)
+        # 单股样本通常 <100，降低门槛；由 train_lstm 内部再切验证集
+        result = train_lstm(
+            X_tr, y_tr, seq_len=seq_len, epochs=epochs,
+            batch_size=32, min_samples=20,
+        )
         model = result.model
     else:
         model = _build_seq_model(key, seq_len, X.shape[-1])
         if model is None:
-            return None, pd.DataFrame(), 0.0
+            raise RuntimeError(f"无法构建时序模型: {key}（可能缺少 tensorflow）")
         from tensorflow.keras import callbacks
         es = callbacks.EarlyStopping(monitor="loss", patience=3, restore_best_weights=True)
-        model.fit(X_tr, y_tr, epochs=epochs, batch_size=32, callbacks=[es], verbose=0)
 
-    # 对齐测试样本的日期：序列末尾对应的信号日
+        class _Ep(callbacks.Callback):
+            def on_epoch_end(self, epoch, logs=None):
+                logs = logs or {}
+                print(
+                    f"    [{key}] epoch {epoch+1}/{epochs} loss={logs.get('loss', 0):.5f}",
+                    flush=True,
+                )
+
+        model.fit(
+            X_tr, y_tr, epochs=epochs, batch_size=min(32, max(8, len(X_tr))),
+            callbacks=[es, _Ep()], verbose=0,
+        )
+
+    print(f"  [{key}] 训练完成，生成回测...", flush=True)
     g = hist.sort_values("date").reset_index(drop=True)
-    # build_lstm_sequences 从 seq_len 开始，每个样本对应 labels[i-1] 即索引 i-1 的 label
-    # 简化：用收盘价序列重建
     closes = g["close"].values
     dates = pd.to_datetime(g["date"].values)
-    # 测试段对应全局索引 split+seq_len ...
     rows = []
     preds = model.predict(X_te, verbose=0).ravel()
     for j, pr in enumerate(preds):
-        # 全局样本索引
         gi = split + j
-        # 信号日约在 hist 的 seq_len + gi - 1
         sig_i = seq_len + gi - 1
         tgt_i = sig_i + forward_days
         if sig_i < 0 or tgt_i >= len(closes):
@@ -305,7 +324,10 @@ def _train_eval_seq(
             "direction_hit": int((float(pr) > 0) == (ar > 0)),
         })
     bt = pd.DataFrame(rows)
+    if bt.empty:
+        raise RuntimeError(f"[{key}] 回测结果为空，日期对齐失败")
     fut = float(model.predict(X[-1:], verbose=0).ravel()[0])
+    print(f"  [{key}] 未来预测收益={fut*100:+.2f}% 回测点={len(bt)}", flush=True)
     return model, bt, fut
 
 
@@ -318,12 +340,21 @@ def analyze_stock(
     epochs: int = 12,
     force_refresh: bool = True,
     hist: Optional[pd.DataFrame] = None,
+    log_lines: Optional[List[str]] = None,
 ) -> StockAnalysisResult:
     """
     对单只股票运行多种模型，返回回测与未来预测。
 
     model_keys 示例: ["lgb", "ridge", "xgb", "lstm", "gru"]
+    log_lines: 若传入 list，会追加运行日志便于 Streamlit 展示
     """
+    import traceback
+
+    def _log(msg: str) -> None:
+        print(msg, flush=True)
+        if log_lines is not None:
+            log_lines.append(msg)
+
     code = _norm_code(code)
     avail = available_qlib_models()
 
@@ -331,15 +362,20 @@ def analyze_stock(
     keys = model_keys or default_keys
     keys = [k.strip().lower() for k in keys if k.strip()]
 
+    _log(f"[环境] tensorflow={HAS_TF} lightgbm={HAS_LGB}")
+    _log(f"[环境] Qlib可用: { {k: avail.get(k) for k in keys if k in avail} }")
+
     if hist is None or hist.empty:
+        _log(f"[数据] 拉取 {code} 行情 start={start_date} ...")
         hist = fetch_stock_hist(code, start_date=start_date, force_refresh=force_refresh)
     if hist.empty:
-        raise RuntimeError(f"无法获取 {code} 行情，请检查代码或网络")
+        raise RuntimeError(f"无法获取 {code} 行情，请检查代码或网络（QUANT_DATA_SOURCE=sina）")
 
     hist = hist.sort_values("date").reset_index(drop=True)
     hist["code"] = code
     last_close = float(hist["close"].iloc[-1])
     asof = str(pd.to_datetime(hist["date"]).max().date())
+    _log(f"[数据] {code} 行数={len(hist)} 截至={asof} 收盘={last_close:.3f}")
 
     try:
         from stock_info import get_stock_name
@@ -348,6 +384,7 @@ def analyze_stock(
         name = code
 
     panel = _build_feature_panel(hist, forward_days=forward_days)
+    _log(f"[特征] 面板样本={len(panel)}")
     if len(panel) < 50:
         raise RuntimeError(f"{code} 有效训练样本不足（{len(panel)}），请拉长历史区间")
 
@@ -355,6 +392,7 @@ def analyze_stock(
 
     for key in keys:
         label = MODEL_LABELS.get(key) or QLIB_MODEL_LABELS.get(key, key)
+        _log(f"—— 开始模型: {label} ({key}) ——")
         try:
             if key in ("lgb",) or key in QLIB_TABULAR_KEYS:
                 if key in QLIB_TABULAR_KEYS and not avail.get(key, False):
@@ -362,12 +400,14 @@ def analyze_stock(
                         key=key, label=label, hist=pd.DataFrame(),
                         error="依赖未安装，已跳过",
                     ))
+                    _log(f"[跳过] {key}: 依赖未安装")
                     continue
                 if key == "lgb" and not HAS_LGB:
                     results.append(ModelBacktestResult(
                         key=key, label=label, hist=pd.DataFrame(),
                         error="未安装 lightgbm",
                     ))
+                    _log(f"[跳过] {key}: 未安装 lightgbm")
                     continue
                 _, _, bt, fut = _train_eval_tabular(key, panel)
                 if bt.empty:
@@ -375,6 +415,7 @@ def analyze_stock(
                         key=key, label=label, hist=pd.DataFrame(),
                         error="样本不足或训练失败",
                     ))
+                    _log(f"[失败] {key}: 回测为空")
                     continue
                 m = _metrics_from_hist(bt)
                 results.append(ModelBacktestResult(
@@ -382,12 +423,17 @@ def analyze_stock(
                     future_pred_return=fut,
                     future_pred_close=last_close * (1 + fut),
                 ))
+                _log(
+                    f"[成功] {key}: 方向准确率={m.get('direction_accuracy', 0):.1%} "
+                    f"预测={fut*100:+.2f}%"
+                )
             elif key in ("lstm",) or key in QLIB_SEQ_KEYS:
                 if not HAS_TF:
                     results.append(ModelBacktestResult(
                         key=key, label=label, hist=pd.DataFrame(),
                         error="未安装 tensorflow（Streamlit 请选 Python 3.11/3.12）",
                     ))
+                    _log(f"[跳过] {key}: 未安装 tensorflow")
                     continue
                 _, bt, fut = _train_eval_seq(
                     key, hist, seq_len=seq_len, forward_days=forward_days, epochs=epochs,
@@ -397,6 +443,7 @@ def analyze_stock(
                         key=key, label=label, hist=pd.DataFrame(),
                         error="时序样本不足或训练失败",
                     ))
+                    _log(f"[失败] {key}: 回测为空")
                     continue
                 m = _metrics_from_hist(bt)
                 results.append(ModelBacktestResult(
@@ -404,17 +451,25 @@ def analyze_stock(
                     future_pred_return=fut,
                     future_pred_close=last_close * (1 + fut),
                 ))
+                _log(
+                    f"[成功] {key}: 方向准确率={m.get('direction_accuracy', 0):.1%} "
+                    f"预测={fut*100:+.2f}%"
+                )
             else:
                 results.append(ModelBacktestResult(
                     key=key, label=label, hist=pd.DataFrame(),
                     error="单股分析暂不支持该模型（规则模型请用组合选股）",
                 ))
+                _log(f"[跳过] {key}: 单股分析不支持")
         except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            tb = traceback.format_exc()
+            _log(f"[异常] {key}: {err}")
+            _log(tb)
             results.append(ModelBacktestResult(
-                key=key, label=label, hist=pd.DataFrame(), error=str(e),
+                key=key, label=label, hist=pd.DataFrame(), error=err,
             ))
 
-    # 汇总表
     rows = []
     for r in results:
         if r.error:
@@ -433,6 +488,7 @@ def analyze_stock(
                 "预测目标价": round(r.future_pred_close, 3),
             })
     summary = pd.DataFrame(rows)
+    _log(f"[完成] 成功 {sum(1 for r in results if not r.error)}/{len(results)}")
 
     return StockAnalysisResult(
         code=code, name=name, hist=hist, asof=asof,
