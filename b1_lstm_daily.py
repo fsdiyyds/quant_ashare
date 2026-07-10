@@ -115,24 +115,28 @@ def main():
             print(f"       {reason[:100]}...")
 
     if HAS_VIZ and not result.final_top.empty:
-        out_dir = ROOT / cfg.get("output", {}).get("dir", "output/b1_lstm")
-        try:
-            print("  生成可视化 HTML（可选，失败不影响推荐）...", flush=True)
-            import pandas as pd
-            raw_cache = None
-            cache_dir = ROOT / "data" / "cache"
-            for f in sorted(cache_dir.glob("hist_*.pkl"), reverse=True):
-                raw_cache = pd.read_pickle(f)
-                break
-            if raw_cache is not None:
-                save_html_report(
-                    result.final_top, raw_cache,
-                    out_path=out_dir / "report_visual_latest.html",
-                    max_charts=5,
-                )
-                print("  可视化 HTML 已生成", flush=True)
-        except Exception as e:
-            print(f"  可视化跳过: {e}", flush=True)
+        import os
+        if os.environ.get("QUANT_LIGHT_MEM", "") in ("1", "true", "True"):
+            print("  [轻量] 跳过可视化 HTML", flush=True)
+        else:
+            out_dir = ROOT / cfg.get("output", {}).get("dir", "output/b1_lstm")
+            try:
+                print("  生成可视化 HTML（可选，失败不影响推荐）...", flush=True)
+                import pandas as pd
+                raw_cache = None
+                cache_dir = ROOT / "data" / "cache"
+                for f in sorted(cache_dir.glob("hist_*.pkl"), reverse=True):
+                    raw_cache = pd.read_pickle(f)
+                    break
+                if raw_cache is not None:
+                    save_html_report(
+                        result.final_top, raw_cache,
+                        out_path=out_dir / "report_visual_latest.html",
+                        max_charts=5,
+                    )
+                    print("  可视化 HTML 已生成", flush=True)
+            except Exception as e:
+                print(f"  可视化跳过: {e}", flush=True)
 
     print(f"\n报告: {result.report_paths.get('md')}")
     print(f"回测指标: {result.report_paths.get('metrics')}")

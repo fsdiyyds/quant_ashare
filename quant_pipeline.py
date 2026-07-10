@@ -134,6 +134,27 @@ def run_pipeline(
     cache_dir = Path(__file__).resolve().parent / data_cfg.get("cache_dir", "data/cache")
     out_dir = Path(__file__).resolve().parent / out_cfg.get("dir", "output/b1_lstm")
 
+    # 低内存模式（Streamlit Cloud）：限制 LSTM 股票数/样本数，用轻量网络
+    import os
+    light_mem = bool(data_cfg.get("light_memory", False)) or os.environ.get("QUANT_LIGHT_MEM", "") in ("1", "true", "True")
+    lstm_max_codes = int(
+        os.environ.get("QUANT_LSTM_MAX_CODES")
+        or data_cfg.get("lstm_max_codes")
+        or (30 if light_mem else 0)
+        or 0
+    ) or None
+    lstm_max_samples = int(
+        os.environ.get("QUANT_LSTM_MAX_SAMPLES")
+        or data_cfg.get("lstm_max_samples")
+        or (2500 if light_mem else 0)
+        or 0
+    ) or None
+    if light_mem:
+        print(
+            f"  [轻量内存模式] LSTM max_codes={lstm_max_codes} max_samples={lstm_max_samples}",
+            flush=True,
+        )
+
     # 云端配置里的 max_stocks 接入
     if max_stocks is None and data_cfg.get("max_stocks"):
         max_stocks = int(data_cfg["max_stocks"])
@@ -220,19 +241,27 @@ def run_pipeline(
         if HAS_TF:
             try:
                 b1_codes = panel["code"].unique().tolist()
-                X, y = build_panel_sequences(raw, codes=b1_codes, seq_len=seq_len, forward_days=forward_days)
+                X, y = build_panel_sequences(
+                    raw, codes=b1_codes, seq_len=seq_len, forward_days=forward_days,
+                    max_codes=lstm_max_codes, max_samples=lstm_max_samples,
+                )
                 print(f"  LSTM 序列样本: {len(X)}", flush=True)
-                if len(X) >= 100:
+                min_need = 50 if light_mem else 100
+                if len(X) >= min_need:
                     lstm_result = train_lstm(
                         X, y, seq_len=seq_len,
-                        epochs=lstm_cfg.get("epochs", 20),
-                        batch_size=lstm_cfg.get("batch_size", 64),
+                        epochs=min(int(lstm_cfg.get("epochs", 20)), 8 if light_mem else 30),
+                        batch_size=min(int(lstm_cfg.get("batch_size", 64)), 32 if light_mem else 128),
+                        min_samples=min_need,
+                        light=light_mem,
                     )
                     lstm_model = lstm_result.model
                     lstm_valid_ic = lstm_result.valid_ic
+                    del X, y
                     steps.done(f"验证 IC={lstm_valid_ic:.4f}")
                 else:
                     steps.done(f"样本不足 ({len(X)})，跳过 LSTM")
+                    del X, y
             except Exception as e:
                 print(f"  LSTM 训练失败（将继续其他模型）: {e}", flush=True)
                 steps.done(f"失败已跳过: {e}")
@@ -246,19 +275,30 @@ def run_pipeline(
         step_idx += 1
         if HAS_TF:
             try:
+                # 轻量模式：最多只训 1 个时序模型，避免 Cloud OOM
+                seq_keys = model_cfg.active_qlib_seq()
+                if light_mem and len(seq_keys) > 1:
+                    seq_keys = seq_keys[:1]
+                    print(f"  [轻量] 仅训练 1 个时序模型: {seq_keys}", flush=True)
                 seq_codes = panel["code"].unique().tolist()
-                X, y = build_panel_sequences(raw, codes=seq_codes, seq_len=seq_len, forward_days=forward_days)
+                X, y = build_panel_sequences(
+                    raw, codes=seq_codes, seq_len=seq_len, forward_days=forward_days,
+                    max_codes=lstm_max_codes, max_samples=lstm_max_samples,
+                )
                 print(f"  Qlib时序 序列样本: {len(X)}", flush=True)
-                if len(X) >= 100:
+                min_need = 50 if light_mem else 100
+                if len(X) >= min_need:
                     qlib_seq_models = train_qlib_seq(
-                        X, y, model_cfg.active_qlib_seq(),
+                        X, y, seq_keys,
                         seq_len=seq_len,
-                        epochs=lstm_cfg.get("epochs", 15),
-                        batch_size=lstm_cfg.get("batch_size", 128),
+                        epochs=min(int(lstm_cfg.get("epochs", 15)), 8 if light_mem else 20),
+                        batch_size=min(int(lstm_cfg.get("batch_size", 128)), 32 if light_mem else 128),
                     )
+                    del X, y
                     steps.done(f"已训练: {list(qlib_seq_models.keys())}")
                 else:
                     steps.done(f"样本不足 ({len(X)})，跳过")
+                    del X, y
             except Exception as e:
                 print(f"  Qlib时序训练失败（将继续）: {e}", flush=True)
                 steps.done(f"失败已跳过: {e}")
@@ -271,15 +311,24 @@ def run_pipeline(
     step_idx += 1
     lstm_preds = None
     if model_cfg.needs_lstm() and lstm_model is not None:
-        lstm_preds = predict_lstm_panel(
-            lstm_model, raw, test, seq_len=seq_len, forward_days=forward_days,
-        )
-        if not lstm_preds.empty:
-            merged = test.merge(lstm_preds, on=["date", "code"], how="inner")
-            if len(merged) > 10:
-                lstm_ic = float(np.corrcoef(merged["lstm_pred"], merged["label"])[0, 1])
-                lstm_dir = float(((merged["lstm_pred"] > 0) == (merged["label"] > 0)).mean())
-                print(f"  LSTM test IC={lstm_ic:.4f} dir_acc={lstm_dir:.1%}", flush=True)
+        if light_mem:
+            # 轻量：跳过全测试集逐日 LSTM 回测（极耗内存），仅用最新截面预测
+            print("  [轻量] 跳过 LSTM 全量测试集回测，仅用于今日推荐", flush=True)
+            lstm_preds = None
+        else:
+            try:
+                lstm_preds = predict_lstm_panel(
+                    lstm_model, raw, test, seq_len=seq_len, forward_days=forward_days,
+                )
+                if not lstm_preds.empty:
+                    merged = test.merge(lstm_preds, on=["date", "code"], how="inner")
+                    if len(merged) > 10:
+                        lstm_ic = float(np.corrcoef(merged["lstm_pred"], merged["label"])[0, 1])
+                        lstm_dir = float(((merged["lstm_pred"] > 0) == (merged["label"] > 0)).mean())
+                        print(f"  LSTM test IC={lstm_ic:.4f} dir_acc={lstm_dir:.1%}", flush=True)
+            except Exception as e:
+                print(f"  LSTM 测试集预测跳过: {e}", flush=True)
+                lstm_preds = None
 
     extra_test_preds = {}
     if qlib_bundle is not None and qlib_bundle.tabular:
@@ -439,39 +488,41 @@ def run_pipeline(
     )
 
     if lstm_model is not None:
-        try:
-            print("  保存 LSTM 模型...", flush=True)
-            lstm_model.save(str(latest / "lstm_model.keras"))
-        except Exception as e:
-            print(f"  保存 keras 失败: {e}", flush=True)
+        if light_mem:
+            print("  [轻量] 跳过 LSTM 模型落盘与历史回测图（省内存）", flush=True)
+        else:
             try:
-                lstm_model.save(str(latest / "lstm_model.h5"))
-            except Exception as e2:
-                print(f"  保存 h5 失败: {e2}", flush=True)
+                print("  保存 LSTM 模型...", flush=True)
+                lstm_model.save(str(latest / "lstm_model.keras"))
+            except Exception as e:
+                print(f"  保存 keras 失败: {e}", flush=True)
+                try:
+                    lstm_model.save(str(latest / "lstm_model.h5"))
+                except Exception as e2:
+                    print(f"  保存 h5 失败: {e2}", flush=True)
 
-        try:
-            # Cloud 内存有限：只对 Top5 做轻量历史回测
-            n_bt = min(5, len(final))
-            print(f"  生成 LSTM 历史回测图数据 (Top{n_bt})...", flush=True)
-            bt_hist_parts = []
-            for code in final["code"].head(n_bt).astype(str).str.zfill(6):
-                sub = raw[raw["code"] == code]
-                h = predict_lstm_historical(
-                    lstm_model, sub, seq_len=seq_len, forward_days=forward_days, max_points=40,
-                )
-                if not h.empty:
-                    h["code"] = code
-                    bt_hist_parts.append(h)
-            if bt_hist_parts:
-                bt_hist = pd.concat(bt_hist_parts, ignore_index=True)
-                bt_hist.to_csv(latest / "lstm_backtest_history.csv", index=False, encoding="utf-8-sig")
-                summary = lstm_backtest_metrics(bt_hist)
-                (latest / "lstm_backtest_summary.json").write_text(
-                    json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8",
-                )
-                print(f"  LSTM 回测历史已写入 ({len(bt_hist)} 点)", flush=True)
-        except Exception as e:
-            print(f"  LSTM 历史回测跳过（不影响推荐）: {e}", flush=True)
+            try:
+                n_bt = min(5, len(final))
+                print(f"  生成 LSTM 历史回测图数据 (Top{n_bt})...", flush=True)
+                bt_hist_parts = []
+                for code in final["code"].head(n_bt).astype(str).str.zfill(6):
+                    sub = raw[raw["code"] == code]
+                    h = predict_lstm_historical(
+                        lstm_model, sub, seq_len=seq_len, forward_days=forward_days, max_points=40,
+                    )
+                    if not h.empty:
+                        h["code"] = code
+                        bt_hist_parts.append(h)
+                if bt_hist_parts:
+                    bt_hist = pd.concat(bt_hist_parts, ignore_index=True)
+                    bt_hist.to_csv(latest / "lstm_backtest_history.csv", index=False, encoding="utf-8-sig")
+                    summary = lstm_backtest_metrics(bt_hist)
+                    (latest / "lstm_backtest_summary.json").write_text(
+                        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8",
+                    )
+                    print(f"  LSTM 回测历史已写入 ({len(bt_hist)} 点)", flush=True)
+            except Exception as e:
+                print(f"  LSTM 历史回测跳过（不影响推荐）: {e}", flush=True)
 
     print("[DONE] pipeline finished OK", flush=True)
     return PipelineResult(

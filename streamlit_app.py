@@ -653,7 +653,23 @@ with tab_run:
         norm = mc.normalized_weights()
 
         st.markdown("**⑤ 运行参数**")
-        max_stocks = st.slider("扫描股票数", 50, 500, 150, 50)
+        use_lstm_like = any(
+            enabled.get(k) for k in ("lstm", "gru", "alstm", "transformer", "mlp_seq")
+        )
+        light_mem = st.checkbox(
+            "轻量内存模式（Streamlit Cloud 强烈推荐）",
+            value=True,
+            help="限制 LSTM 股票数/样本数，跳过重型回测，避免内存溢出导致无结果",
+        )
+        max_default = 80 if (use_lstm_like and light_mem) else 150
+        max_stocks = st.slider(
+            "扫描股票数",
+            30, 500,
+            min(max_default, 80 if light_mem and use_lstm_like else 150),
+            10,
+        )
+        if use_lstm_like and max_stocks > 100 and light_mem:
+            st.caption("已启用时序模型 + 轻量模式：建议扫描数 ≤ 80，否则仍可能 OOM。")
         top_k = st.slider("输出 Top N 推荐", 10, 100, 50, 10)
         force_refresh = st.checkbox("运行时拉取最新成交数据", value=True)
         skip_gate = st.checkbox("忽略回测门槛（仍输出推荐）", value=True)
@@ -713,11 +729,14 @@ with tab_run:
         cfg_path = _build_runtime_yaml(base_cfg, enabled, weights, skip_gate, force_refresh)
         cfg_data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         cfg_data.setdefault("lstm", {})["top_k"] = top_k
-        # Cloud 上 LSTM 降负载
-        if any(enabled.get(k) for k in ("lstm", "gru", "alstm", "transformer", "mlp_seq")):
-            cfg_data.setdefault("lstm", {})["epochs"] = min(
-                int(cfg_data.get("lstm", {}).get("epochs", 15)), 12,
-            )
+        # Cloud / 轻量模式：降负载
+        use_seq = any(enabled.get(k) for k in ("lstm", "gru", "alstm", "transformer", "mlp_seq"))
+        if light_mem or use_seq:
+            cfg_data.setdefault("data", {})["light_memory"] = True
+            cfg_data["data"]["lstm_max_codes"] = 25
+            cfg_data["data"]["lstm_max_samples"] = 2000
+            cfg_data.setdefault("lstm", {})["epochs"] = 6
+            cfg_data["lstm"]["batch_size"] = 32
         cfg_path.write_text(
             yaml.dump(cfg_data, allow_unicode=True, default_flow_style=False), encoding="utf-8",
         )
@@ -725,12 +744,35 @@ with tab_run:
         top50_path = LATEST_DIR / "top50_latest.csv"
         before_mtime = top50_path.stat().st_mtime if top50_path.exists() else 0.0
 
+        # 启用时序时强制压扫描数，避免 Cloud OOM
+        run_max = max_stocks
+        if use_seq and light_mem:
+            run_max = min(max_stocks, 80)
+
         active = mc.active_keys()
+        # 轻量模式：时序模型最多保留 1 个（优先 LSTM），降低峰值内存
+        if light_mem:
+            non_seq = [k for k in active if k not in ("lstm", "gru", "alstm", "transformer", "mlp_seq")]
+            seq_active = [k for k in active if k in ("lstm", "gru", "alstm", "transformer", "mlp_seq")]
+            if "lstm" in seq_active:
+                seq_keep = ["lstm"]
+            elif seq_active:
+                seq_keep = [seq_active[0]]
+            else:
+                seq_keep = []
+            active = non_seq + seq_keep
+            if len(seq_active) > 1:
+                lines_pre = f"[轻量] 时序模型过多，仅保留: {seq_keep}"
+            else:
+                lines_pre = ""
+        else:
+            lines_pre = ""
+
         w_str = ",".join(str(weights.get(k, 1.0)) for k in active)
         cmd = [
             sys.executable, "-u", str(ROOT / "b1_lstm_daily.py"),
             "--config", str(cfg_path),
-            "--max-stocks", str(max_stocks),
+            "--max-stocks", str(run_max),
             "--models", ",".join(active),
             "--weights", w_str,
         ]
@@ -746,13 +788,19 @@ with tab_run:
             "QUANT_DATA_SOURCE": "sina",
             "PYTHONUNBUFFERED": "1",
             "TF_CPP_MIN_LOG_LEVEL": "2",
+            "QUANT_LIGHT_MEM": "1" if light_mem else "0",
+            "QUANT_LSTM_MAX_CODES": "25",
+            "QUANT_LSTM_MAX_SAMPLES": "2000",
         }
         lines: list = []
         step_pat = re.compile(r"\[(\d+)/(\d+)\]")
         done_pat = re.compile(r"\[DONE\].*top50_latest")
         wrote_recommend = False
         lines.append(f"$ {' '.join(cmd)}")
-        lines.append(f"[env] {tf_msg_run}")
+        lines.append(f"[env] {tf_msg_run} | light_mem={light_mem} max_stocks={run_max}")
+        if lines_pre:
+            lines.append(lines_pre)
+        lines.append(f"[models] {','.join(active)}")
         lines.append(f"[time] start {_dt.now():%Y-%m-%d %H:%M:%S}")
         log_box.code("\n".join(lines[-45:]), language=None)
 

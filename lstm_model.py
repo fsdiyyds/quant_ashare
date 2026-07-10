@@ -93,26 +93,63 @@ def build_lstm_sequences(
     return np.array(X_list), np.array(y_list), SEQ_FEATURES
 
 
+def _configure_tf_memory():
+    """限制 TensorFlow 显存/内存占用，降低 Cloud OOM 概率。"""
+    if not HAS_TF:
+        return
+    try:
+        gpus = tf.config.list_physical_devices("GPU")
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except Exception:
+        pass
+    # 限制 CPU 线程，减少峰值内存
+    try:
+        tf.config.threading.set_intra_op_parallelism_threads(2)
+        tf.config.threading.set_inter_op_parallelism_threads(2)
+    except Exception:
+        pass
+
+
 def build_panel_sequences(
     raw: pd.DataFrame,
     codes: Optional[List[str]] = None,
     seq_len: int = 30,
     forward_days: int = 5,
+    max_codes: Optional[int] = None,
+    max_samples: Optional[int] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """合并多只股票序列为训练集。"""
+    """合并多只股票序列为训练集。
+
+    max_codes / max_samples 用于 Streamlit Cloud 等低内存环境，避免 OOM。
+    """
     X_all, y_all = [], []
-    target_codes = codes or raw["code"].unique().tolist()
+    target_codes = list(codes or raw["code"].unique().tolist())
+    if max_codes is not None and len(target_codes) > max_codes:
+        # 均匀抽样，避免只取前缀代码
+        idx = np.linspace(0, len(target_codes) - 1, max_codes).astype(int)
+        target_codes = [target_codes[i] for i in idx]
+        print(f"  LSTM序列: 股票数限制为 {max_codes}", flush=True)
 
     from progress_utils import ProgressBar
     bar = ProgressBar(len(target_codes), desc="  LSTM序列", unit="股")
+    n_samples = 0
     for code in target_codes:
+        if max_samples is not None and n_samples >= max_samples:
+            break
         sub = raw[raw["code"] == code]
         X, y, _ = build_lstm_sequences(sub, seq_len, forward_days)
         if len(X) > 0:
-            X_all.append(X)
-            y_all.append(y)
+            if max_samples is not None and n_samples + len(X) > max_samples:
+                keep = max(0, max_samples - n_samples)
+                if keep <= 0:
+                    break
+                X, y = X[-keep:], y[-keep:]
+            X_all.append(X.astype(np.float32, copy=False))
+            y_all.append(y.astype(np.float32, copy=False))
+            n_samples += len(X)
         bar.update(1, postfix=str(code))
-    bar.close()
+    bar.close(f"样本 {n_samples}")
 
     if not X_all:
         return np.array([]), np.array([])
@@ -120,19 +157,30 @@ def build_panel_sequences(
     return np.concatenate(X_all), np.concatenate(y_all)
 
 
-def _build_lstm_model(seq_len: int, n_features: int, units: int = 64):
+def _build_lstm_model(seq_len: int, n_features: int, units: int = 64, light: bool = False):
     if not HAS_TF:
         raise ImportError("请安装 tensorflow: pip install tensorflow")
 
-    model = models.Sequential([
-        layers.Input(shape=(seq_len, n_features)),
-        layers.LSTM(units, return_sequences=True),
-        layers.Dropout(0.2),
-        layers.LSTM(units // 2),
-        layers.Dropout(0.2),
-        layers.Dense(32, activation="relu"),
-        layers.Dense(1),
-    ])
+    _configure_tf_memory()
+    if light:
+        units = min(units, 32)
+        model = models.Sequential([
+            layers.Input(shape=(seq_len, n_features)),
+            layers.LSTM(units),
+            layers.Dropout(0.2),
+            layers.Dense(16, activation="relu"),
+            layers.Dense(1),
+        ])
+    else:
+        model = models.Sequential([
+            layers.Input(shape=(seq_len, n_features)),
+            layers.LSTM(units, return_sequences=True),
+            layers.Dropout(0.2),
+            layers.LSTM(units // 2),
+            layers.Dropout(0.2),
+            layers.Dense(32, activation="relu"),
+            layers.Dense(1),
+        ])
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="mse")
     return model
 
@@ -145,6 +193,7 @@ def train_lstm(
     batch_size: int = 64,
     train_ratio: float = 0.8,
     min_samples: int = 100,
+    light: bool = False,
 ) -> LSTMResult:
     if not HAS_TF:
         raise ImportError(
@@ -164,7 +213,7 @@ def train_lstm(
     if len(X_train) < 10 or len(X_valid) < 3:
         raise ValueError(f"LSTM 划分后样本过少: train={len(X_train)} valid={len(X_valid)}")
 
-    model = _build_lstm_model(seq_len, X.shape[2])
+    model = _build_lstm_model(seq_len, X.shape[2], light=light)
     es = callbacks.EarlyStopping(patience=5, restore_best_weights=True, monitor="val_loss")
 
     print(f"  LSTM train: {len(X_train)} | valid: {len(X_valid)}", flush=True)
