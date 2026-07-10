@@ -218,20 +218,26 @@ def run_pipeline(
         steps.start(step_idx)
         step_idx += 1
         if HAS_TF:
-            b1_codes = panel["code"].unique().tolist()
-            X, y = build_panel_sequences(raw, codes=b1_codes, seq_len=seq_len, forward_days=forward_days)
-            if len(X) >= 100:
-                lstm_result = train_lstm(
-                    X, y, seq_len=seq_len,
-                    epochs=lstm_cfg.get("epochs", 20),
-                    batch_size=lstm_cfg.get("batch_size", 64),
-                )
-                lstm_model = lstm_result.model
-                lstm_valid_ic = lstm_result.valid_ic
-                steps.done(f"验证 IC={lstm_valid_ic:.4f}")
-            else:
-                steps.done(f"样本不足 ({len(X)})，跳过")
+            try:
+                b1_codes = panel["code"].unique().tolist()
+                X, y = build_panel_sequences(raw, codes=b1_codes, seq_len=seq_len, forward_days=forward_days)
+                print(f"  LSTM 序列样本: {len(X)}", flush=True)
+                if len(X) >= 100:
+                    lstm_result = train_lstm(
+                        X, y, seq_len=seq_len,
+                        epochs=lstm_cfg.get("epochs", 20),
+                        batch_size=lstm_cfg.get("batch_size", 64),
+                    )
+                    lstm_model = lstm_result.model
+                    lstm_valid_ic = lstm_result.valid_ic
+                    steps.done(f"验证 IC={lstm_valid_ic:.4f}")
+                else:
+                    steps.done(f"样本不足 ({len(X)})，跳过 LSTM")
+            except Exception as e:
+                print(f"  LSTM 训练失败（将继续其他模型）: {e}", flush=True)
+                steps.done(f"失败已跳过: {e}")
         else:
+            print("  警告: 未安装 tensorflow，LSTM 权重将不生效", flush=True)
             steps.done("未安装 tensorflow，跳过")
 
     qlib_seq_models = {}
@@ -239,19 +245,25 @@ def run_pipeline(
         steps.start(step_idx)
         step_idx += 1
         if HAS_TF:
-            seq_codes = panel["code"].unique().tolist()
-            X, y = build_panel_sequences(raw, codes=seq_codes, seq_len=seq_len, forward_days=forward_days)
-            if len(X) >= 100:
-                qlib_seq_models = train_qlib_seq(
-                    X, y, model_cfg.active_qlib_seq(),
-                    seq_len=seq_len,
-                    epochs=lstm_cfg.get("epochs", 15),
-                    batch_size=lstm_cfg.get("batch_size", 128),
-                )
-                steps.done(f"已训练: {list(qlib_seq_models.keys())}")
-            else:
-                steps.done(f"样本不足 ({len(X)})，跳过")
+            try:
+                seq_codes = panel["code"].unique().tolist()
+                X, y = build_panel_sequences(raw, codes=seq_codes, seq_len=seq_len, forward_days=forward_days)
+                print(f"  Qlib时序 序列样本: {len(X)}", flush=True)
+                if len(X) >= 100:
+                    qlib_seq_models = train_qlib_seq(
+                        X, y, model_cfg.active_qlib_seq(),
+                        seq_len=seq_len,
+                        epochs=lstm_cfg.get("epochs", 15),
+                        batch_size=lstm_cfg.get("batch_size", 128),
+                    )
+                    steps.done(f"已训练: {list(qlib_seq_models.keys())}")
+                else:
+                    steps.done(f"样本不足 ({len(X)})，跳过")
+            except Exception as e:
+                print(f"  Qlib时序训练失败（将继续）: {e}", flush=True)
+                steps.done(f"失败已跳过: {e}")
         else:
+            print("  警告: 未安装 tensorflow，Qlib 时序模型跳过", flush=True)
             steps.done("未安装 tensorflow，跳过")
 
     # 回测：组装测试集预测
@@ -410,32 +422,7 @@ def run_pipeline(
     latest = Path(__file__).resolve().parent / "output" / "latest"
     latest.mkdir(parents=True, exist_ok=True)
 
-    if lstm_model is not None:
-        try:
-            lstm_model.save(str(latest / "lstm_model.keras"))
-        except Exception:
-            try:
-                lstm_model.save(str(latest / "lstm_model.h5"))
-            except Exception:
-                pass
-
-        bt_hist_parts = []
-        for code in final["code"].head(min(top_k, 20)).astype(str).str.zfill(6):
-            sub = raw[raw["code"] == code]
-            h = predict_lstm_historical(
-                lstm_model, sub, seq_len=seq_len, forward_days=forward_days, max_points=80,
-            )
-            if not h.empty:
-                h["code"] = code
-                bt_hist_parts.append(h)
-        if bt_hist_parts:
-            bt_hist = pd.concat(bt_hist_parts, ignore_index=True)
-            bt_hist.to_csv(latest / "lstm_backtest_history.csv", index=False, encoding="utf-8-sig")
-            summary = lstm_backtest_metrics(bt_hist)
-            (latest / "lstm_backtest_summary.json").write_text(
-                json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8",
-            )
-
+    # 先写推荐结果，避免后续 LSTM 存模型/逐股回测 OOM 导致推荐页不更新
     final.to_csv(latest / "top50_latest.csv", index=False, encoding="utf-8-sig")
     b1_pool.to_csv(latest / "b1_pool_latest.csv", index=False, encoding="utf-8-sig")
     import shutil
@@ -445,7 +432,48 @@ def run_pipeline(
         json.dumps(model_cfg.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8",
     )
     (latest / "data_asof.txt").write_text(str(latest_dt.date()), encoding="utf-8")
+    print(
+        f"[DONE] 已写入推荐: {latest / 'top50_latest.csv'} "
+        f"({len(final)} 只) model={model_cfg.summary()}",
+        flush=True,
+    )
 
+    if lstm_model is not None:
+        try:
+            print("  保存 LSTM 模型...", flush=True)
+            lstm_model.save(str(latest / "lstm_model.keras"))
+        except Exception as e:
+            print(f"  保存 keras 失败: {e}", flush=True)
+            try:
+                lstm_model.save(str(latest / "lstm_model.h5"))
+            except Exception as e2:
+                print(f"  保存 h5 失败: {e2}", flush=True)
+
+        try:
+            # Cloud 内存有限：只对 Top5 做轻量历史回测
+            n_bt = min(5, len(final))
+            print(f"  生成 LSTM 历史回测图数据 (Top{n_bt})...", flush=True)
+            bt_hist_parts = []
+            for code in final["code"].head(n_bt).astype(str).str.zfill(6):
+                sub = raw[raw["code"] == code]
+                h = predict_lstm_historical(
+                    lstm_model, sub, seq_len=seq_len, forward_days=forward_days, max_points=40,
+                )
+                if not h.empty:
+                    h["code"] = code
+                    bt_hist_parts.append(h)
+            if bt_hist_parts:
+                bt_hist = pd.concat(bt_hist_parts, ignore_index=True)
+                bt_hist.to_csv(latest / "lstm_backtest_history.csv", index=False, encoding="utf-8-sig")
+                summary = lstm_backtest_metrics(bt_hist)
+                (latest / "lstm_backtest_summary.json").write_text(
+                    json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+                print(f"  LSTM 回测历史已写入 ({len(bt_hist)} 点)", flush=True)
+        except Exception as e:
+            print(f"  LSTM 历史回测跳过（不影响推荐）: {e}", flush=True)
+
+    print("[DONE] pipeline finished OK", flush=True)
     return PipelineResult(
         b1_pool=b1_pool,
         final_top=final,

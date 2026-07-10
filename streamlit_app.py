@@ -249,6 +249,10 @@ avail = available_qlib_models()
 
 # ── 推荐列表 ──
 with tab_list:
+    banner = st.session_state.get("train_result_banner")
+    if banner and banner.get("kind") == "success":
+        st.success(banner.get("msg", "训练已完成，以下为最新推荐。"))
+
     if top50.empty:
         st.warning("暂无结果。请在「模型组合 & 运行」页配置并开始训练。")
     else:
@@ -380,6 +384,14 @@ with tab_chart:
             except ImportError:
                 st.error("请安装 plotly: pip install plotly")
 
+def _tf_status() -> tuple[bool, str]:
+    try:
+        import tensorflow as tf
+        return True, f"TensorFlow {tf.__version__}"
+    except Exception as e:
+        return False, f"未安装/不可用: {e}"
+
+
 # ── 单股多模型分析 ──
 with tab_single:
     st.subheader("输入股票代码 · 多模型回测与未来预测")
@@ -387,6 +399,16 @@ with tab_single:
         "对单只股票分别训练 LightGBM / Qlib 表格模型 / LSTM / GRU 等，"
         "输出回测准确度对比图、预测目标价叠加图，以及未来 N 日股价预测。"
     )
+
+    tf_ok, tf_msg = _tf_status()
+    if tf_ok:
+        st.success(f"时序模型环境就绪：{tf_msg}")
+    else:
+        st.error(
+            f"LSTM/GRU 等时序模型不可用 — {tf_msg}\n\n"
+            "解决：Streamlit Advanced settings 选 **Python 3.11 或 3.12** 后 Redeploy；"
+            "本地执行 `pip install \"tensorflow>=2.15,<2.20\"`。"
+        )
 
     c1, c2, c3 = st.columns([1.2, 1.5, 1])
     with c1:
@@ -407,7 +429,8 @@ with tab_single:
             "transformer": "Qlib Transformer",
             "mlp_seq": "Qlib MLP(时序)",
         }
-        default_sel = ["lgb", "ridge", "xgb", "lstm", "gru"]
+        seq_keys_ui = {"lstm", "gru", "alstm", "transformer", "mlp_seq"}
+        default_sel = ["lgb", "ridge", "xgb"] + (["lstm", "gru"] if tf_ok else [])
         selected_labels = st.multiselect(
             "选择模型（可多选）",
             options=list(single_model_opts.values()),
@@ -415,26 +438,24 @@ with tab_single:
         )
         label_to_key = {v: k for k, v in single_model_opts.items()}
         selected_keys = [label_to_key[x] for x in selected_labels]
+        if any(k in seq_keys_ui for k in selected_keys) and not tf_ok:
+            st.warning("已选时序模型，但当前环境无 TensorFlow，运行后这些模型会标记为失败并显示原因。")
     with c3:
         fwd = st.selectbox("预测天数", [3, 5, 10], index=1)
         epochs_single = st.slider("时序训练轮数", 5, 25, 10, 1)
 
     run_single = st.button("开始分析该股票", type="primary", disabled=not selected_keys)
+    single_log_box = st.empty()
 
     if run_single:
         code_clean = "".join(ch for ch in code_in if ch.isdigit()).zfill(6)
         if len(code_clean) != 6:
             st.error("请输入 6 位股票代码")
         else:
+            logs: list = []
             with st.spinner(f"正在拉取 {code_clean} 行情并训练 {len(selected_keys)} 个模型..."):
                 try:
                     from stock_analyzer import analyze_stock
-                    from visualize import (
-                        build_future_forecast_figure,
-                        build_model_backtest_figure,
-                        build_multi_model_accuracy_figure,
-                        build_multi_model_overlay_backtest,
-                    )
 
                     result = analyze_stock(
                         code_clean,
@@ -442,15 +463,36 @@ with tab_single:
                         forward_days=int(fwd),
                         epochs=int(epochs_single),
                         force_refresh=True,
+                        log_lines=logs,
                     )
                     st.session_state["single_analysis"] = result
+                    st.session_state["single_analysis_logs"] = logs
+                    failed = [r for r in result.models if r.error]
+                    if failed:
+                        st.warning(
+                            "部分模型失败：\n" + "\n".join(f"- {r.label}: {r.error}" for r in failed)
+                        )
                     st.success(
                         f"{result.name}({result.code}) 分析完成 | "
                         f"行情截至 {result.asof} | 最新收盘 {result.last_close:.2f}"
                     )
                 except Exception as e:
-                    st.error(f"分析失败: {e}")
+                    import traceback
                     st.session_state.pop("single_analysis", None)
+                    st.session_state["single_analysis_logs"] = logs + [
+                        f"FATAL: {e}", traceback.format_exc(),
+                    ]
+                    st.error(f"分析失败: {e}")
+                    st.code(traceback.format_exc(), language=None)
+
+            if logs:
+                with st.expander("运行日志（点击展开）", expanded=True):
+                    single_log_box.code("\n".join(logs[-80:]), language=None)
+
+    # 保留上次日志
+    if "single_analysis_logs" in st.session_state and not run_single:
+        with st.expander("上次运行日志", expanded=False):
+            st.code("\n".join(st.session_state["single_analysis_logs"][-80:]), language=None)
 
     result = st.session_state.get("single_analysis")
     if result is not None:
@@ -461,6 +503,13 @@ with tab_single:
         ok_n = sum(1 for r in result.models if not r.error)
         m3.metric("成功模型", f"{ok_n}/{len(result.models)}")
         m4.metric("预测窗口", f"{result.forward_days} 日")
+
+        failed_models = [r for r in result.models if r.error]
+        if failed_models:
+            st.error(
+                "失败模型详情：\n"
+                + "\n".join(f"- **{r.label}**: `{r.error}`" for r in failed_models)
+            )
 
         st.markdown("#### ① 多模型回测准确度 & 未来收益对比")
         st.dataframe(result.summary, use_container_width=True, hide_index=True)
@@ -498,7 +547,7 @@ with tab_single:
 
         st.markdown("#### ④ 分模型回测详情")
         for r in result.models:
-            with st.expander(f"{r.label} — {'失败' if r.error else '成功'}", expanded=False):
+            with st.expander(f"{r.label} — {'失败' if r.error else '成功'}", expanded=bool(r.error)):
                 if r.error:
                     st.error(r.error)
                     continue
@@ -511,6 +560,7 @@ with tab_single:
                     f"{r.future_pred_return*100:+.2f}% → {r.future_pred_close:.2f}",
                 )
                 try:
+                    from visualize import build_model_backtest_figure
                     fig_one = build_model_backtest_figure(
                         r.hist, r.label, code=result.code, name=result.name,
                         forward_days=result.forward_days, metrics=r.metrics,
@@ -551,11 +601,17 @@ with tab_run:
     with col_cfg:
         st.markdown("**① 原生模型**")
         enabled = {}
+        tf_ok_native, tf_msg_native = _tf_status()
         for k in NATIVE_KEYS:
             default_on = preset_enabled.get(k, True) if preset != "自定义" else True
-            enabled[k] = st.checkbox(
-                f"{MODEL_LABELS[k]} — {MODEL_DESC.get(k, '')}",
-                value=default_on, key=f"en_{k}",
+            label = f"{MODEL_LABELS[k]} — {MODEL_DESC.get(k, '')}"
+            if k == "lstm" and not tf_ok_native:
+                label += " ⚠️ 当前环境无 TensorFlow"
+            enabled[k] = st.checkbox(label, value=default_on, key=f"en_{k}")
+        if enabled.get("lstm") and not tf_ok_native:
+            st.warning(
+                f"已勾选 LSTM，但 {tf_msg_native}。训练会跳过 LSTM，推荐结果可能与预期不符。"
+                "请将 Streamlit Python 改为 3.11/3.12。"
             )
 
         st.markdown("**② Qlib 表格模型**（参考 microsoft/qlib Model Zoo）")
@@ -620,19 +676,54 @@ with tab_run:
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
     st.divider()
+    # 展示上次训练结果横幅（避免 rerun 后提示消失）
+    last_banner = st.session_state.get("train_result_banner")
+    if last_banner:
+        kind = last_banner.get("kind", "info")
+        msg = last_banner.get("msg", "")
+        if kind == "success":
+            st.success(msg)
+        elif kind == "error":
+            st.error(msg)
+        else:
+            st.warning(msg)
+        if last_banner.get("logs"):
+            with st.expander("上次训练日志", expanded=(kind != "success")):
+                st.code("\n".join(last_banner["logs"][-80:]), language=None)
+
+    tf_ok_run, tf_msg_run = _tf_status()
+    if any(enabled.get(k) for k in ("lstm", "gru", "alstm", "transformer", "mlp_seq")):
+        if tf_ok_run:
+            st.info(f"已启用时序模型，环境：{tf_msg_run}。Cloud 上建议扫描股票数 ≤ 100，避免内存不足。")
+        else:
+            st.error(
+                f"已启用 LSTM/时序模型，但 {tf_msg_run}。"
+                "训练会跳过或失败。请将 Streamlit Python 改为 3.11/3.12 后 Redeploy。"
+            )
+
     log_box = st.empty()
     prog = st.progress(0, text="等待开始...")
 
     if st.button("开始训练并生成推荐", type="primary", disabled=not mc.active_keys()):
         import re
+        import traceback
+        from datetime import datetime as _dt
 
         base_cfg = ROOT / "config" / "cloud_settings.yaml"
         cfg_path = _build_runtime_yaml(base_cfg, enabled, weights, skip_gate, force_refresh)
         cfg_data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         cfg_data.setdefault("lstm", {})["top_k"] = top_k
+        # Cloud 上 LSTM 降负载
+        if any(enabled.get(k) for k in ("lstm", "gru", "alstm", "transformer", "mlp_seq")):
+            cfg_data.setdefault("lstm", {})["epochs"] = min(
+                int(cfg_data.get("lstm", {}).get("epochs", 15)), 12,
+            )
         cfg_path.write_text(
             yaml.dump(cfg_data, allow_unicode=True, default_flow_style=False), encoding="utf-8",
         )
+
+        top50_path = LATEST_DIR / "top50_latest.csv"
+        before_mtime = top50_path.stat().st_mtime if top50_path.exists() else 0.0
 
         active = mc.active_keys()
         w_str = ",".join(str(weights.get(k, 1.0)) for k in active)
@@ -650,35 +741,124 @@ with tab_run:
         else:
             cmd.append("--no-refresh")
 
-        env = {**os.environ, "QUANT_DATA_SOURCE": "sina", "PYTHONUNBUFFERED": "1"}
+        env = {
+            **os.environ,
+            "QUANT_DATA_SOURCE": "sina",
+            "PYTHONUNBUFFERED": "1",
+            "TF_CPP_MIN_LOG_LEVEL": "2",
+        }
         lines: list = []
         step_pat = re.compile(r"\[(\d+)/(\d+)\]")
+        done_pat = re.compile(r"\[DONE\].*top50_latest")
+        wrote_recommend = False
+        lines.append(f"$ {' '.join(cmd)}")
+        lines.append(f"[env] {tf_msg_run}")
+        lines.append(f"[time] start {_dt.now():%Y-%m-%d %H:%M:%S}")
+        log_box.code("\n".join(lines[-45:]), language=None)
 
-        with st.spinner("训练中，请查看下方实时日志..."):
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, env=env, cwd=str(ROOT),
-                encoding="utf-8", errors="replace",
-            )
-            for line in proc.stdout:
-                line = line.rstrip()
-                if line:
-                    lines.append(line)
-                    log_box.code("\n".join(lines[-45:]), language=None)
-                    m = step_pat.search(line)
-                    if m:
-                        cur, tot = int(m.group(1)), int(m.group(2))
-                        prog.progress(min(cur / tot, 1.0), text=f"步骤 {cur}/{tot} — {mc.summary()}")
-            proc.wait()
+        with st.spinner("训练中，请查看下方实时日志（含 LSTM 时可能较久）..."):
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, env=env, cwd=str(ROOT),
+                    encoding="utf-8", errors="replace",
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        lines.append(line)
+                        if done_pat.search(line):
+                            wrote_recommend = True
+                        log_box.code("\n".join(lines[-60:]), language=None)
+                        m = step_pat.search(line)
+                        if m:
+                            cur, tot = int(m.group(1)), int(m.group(2))
+                            prog.progress(
+                                min(cur / tot, 1.0),
+                                text=f"步骤 {cur}/{tot} — {mc.summary()}",
+                            )
+                proc.wait()
+            except Exception as e:
+                lines.append(f"FATAL subprocess: {e}")
+                lines.append(traceback.format_exc())
+                log_box.code("\n".join(lines[-60:]), language=None)
+                st.session_state["train_result_banner"] = {
+                    "kind": "error",
+                    "msg": f"启动训练进程失败: {e}",
+                    "logs": lines,
+                }
+                st.error(f"启动训练进程失败: {e}")
+                st.stop()
 
-        if proc.returncode == 0:
+        after_exists = top50_path.exists()
+        after_mtime = top50_path.stat().st_mtime if after_exists else 0.0
+        file_updated = after_exists and after_mtime > before_mtime
+        n_rows = 0
+        if after_exists:
+            try:
+                n_rows = len(pd.read_csv(top50_path))
+            except Exception:
+                n_rows = -1
+
+        lines.append(f"[time] end {_dt.now():%Y-%m-%d %H:%M:%S}")
+        lines.append(
+            f"[check] exit={proc.returncode} wrote_flag={wrote_recommend} "
+            f"file_updated={file_updated} top50_rows={n_rows}"
+        )
+        log_box.code("\n".join(lines[-60:]), language=None)
+        st.session_state["last_train_logs"] = lines
+
+        # 137/-9 常见于 Cloud OOM
+        oom = proc.returncode in (137, -9, 247)
+        success = (proc.returncode == 0 and (wrote_recommend or file_updated)) or (
+            file_updated and wrote_recommend
+        )
+
+        if success or file_updated:
             prog.progress(1.0, text="完成!")
-            st.success(f"训练完成！模型组合：{mc.summary()}")
-            st.info("请切换到「推荐列表」查看最值得购买的股票。")
+            banner = (
+                f"训练完成！模型：{mc.summary()} | "
+                f"已更新 top50_latest.csv（{n_rows} 只）| "
+                f"请打开「推荐列表」查看。"
+            )
+            if proc.returncode != 0 and file_updated:
+                banner = (
+                    f"进程异常退出 (exit {proc.returncode})，但推荐文件已更新（{n_rows} 只）。"
+                    f"可打开「推荐列表」。日志末尾可能有 LSTM 后处理被中断。"
+                )
+            st.session_state["train_result_banner"] = {
+                "kind": "success",
+                "msg": banner,
+                "logs": lines,
+            }
             st.cache_data.clear()
             st.rerun()
         else:
-            st.error(f"运行失败 (exit {proc.returncode})，请查看日志。")
+            prog.progress(1.0, text="失败")
+            reason = f"运行失败 (exit {proc.returncode})"
+            if oom:
+                reason += " — 疑似内存不足(OOM)。请减小扫描股票数，或暂时关闭 LSTM/GRU。"
+            if not file_updated:
+                reason += " — 推荐文件未更新，故「推荐列表」不会变化。"
+            st.session_state["train_result_banner"] = {
+                "kind": "error",
+                "msg": reason,
+                "logs": lines,
+            }
+            st.error(reason)
+            with st.expander("完整失败日志", expanded=True):
+                st.code(
+                    "\n".join(lines[-120:]) if lines else "(无输出，进程可能被系统直接杀掉)",
+                    language=None,
+                )
+            st.warning(
+                "排查建议：\n"
+                "1) Streamlit Advanced settings 选 Python **3.11/3.12**（装 TensorFlow）\n"
+                "2) 扫描股票数先设 **50~100**，确认能跑通\n"
+                "3) 先只用 B1+LightGBM，确认推荐页会更新，再加 LSTM\n"
+                "4) 看日志是否出现 `[DONE] 已写入推荐`"
+            )
 
 # ── 数据管理 ──
 with tab_data:

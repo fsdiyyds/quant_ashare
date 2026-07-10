@@ -117,6 +117,7 @@ def main():
     if HAS_VIZ and not result.final_top.empty:
         out_dir = ROOT / cfg.get("output", {}).get("dir", "output/b1_lstm")
         try:
+            print("  生成可视化 HTML（可选，失败不影响推荐）...", flush=True)
             import pandas as pd
             raw_cache = None
             cache_dir = ROOT / "data" / "cache"
@@ -127,10 +128,11 @@ def main():
                 save_html_report(
                     result.final_top, raw_cache,
                     out_path=out_dir / "report_visual_latest.html",
-                    max_charts=10,
+                    max_charts=5,
                 )
-        except Exception:
-            pass
+                print("  可视化 HTML 已生成", flush=True)
+        except Exception as e:
+            print(f"  可视化跳过: {e}", flush=True)
 
     print(f"\n报告: {result.report_paths.get('md')}")
     print(f"回测指标: {result.report_paths.get('metrics')}")
