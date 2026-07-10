@@ -248,6 +248,208 @@ def build_lstm_feature_heatmap(
     return fig
 
 
+def build_model_backtest_figure(
+    hist: "pd.DataFrame",
+    model_label: str,
+    code: str = "",
+    name: str = "",
+    forward_days: int = 5,
+    metrics: Optional[dict] = None,
+) -> "go.Figure":
+    """单模型回测：预测目标价 vs 真实目标价 + 偏差柱。"""
+    _require_plotly()
+    if hist is None or hist.empty:
+        raise ValueError("无回测数据")
+
+    title = f"{name}({code})" if name and name != code else (code or model_label)
+    metrics = metrics or {}
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+        row_heights=[0.65, 0.35],
+        subplot_titles=(
+            f"{title} — {model_label}：{forward_days}日后目标价 预测 vs 真实",
+            "预测偏差 (%)",
+        ),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=hist["target_date"], y=hist["actual_close"],
+            name="真实目标价", line=dict(color="#2563eb", width=2),
+            mode="lines+markers", marker=dict(size=4),
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=hist["target_date"], y=hist["pred_close"],
+            name=f"{model_label} 预测价", line=dict(color="#ef4444", width=2, dash="dash"),
+            mode="lines+markers", marker=dict(size=5, symbol="diamond"),
+        ),
+        row=1, col=1,
+    )
+    colors = ["#22c55e" if h else "#ef4444" for h in hist["direction_hit"]]
+    fig.add_trace(
+        go.Bar(x=hist["target_date"], y=hist["error_pct"], name="偏差%", marker_color=colors, opacity=0.75),
+        row=2, col=1,
+    )
+    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=2, col=1)
+    ann = (
+        f"样本={metrics.get('n_points', len(hist))} | "
+        f"方向准确率={metrics.get('direction_accuracy', 0):.1%} | "
+        f"均价误差={metrics.get('mean_error_pct', 0):+.2f}% | "
+        f"收益相关={metrics.get('return_correlation', 0):.3f}"
+    )
+    fig.update_layout(
+        height=560, template="plotly_white", hovermode="x unified",
+        title=ann, margin=dict(l=50, r=30, t=80, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    fig.update_yaxes(title_text="价格", row=1, col=1)
+    fig.update_yaxes(title_text="偏差%", row=2, col=1)
+    return fig
+
+
+def build_multi_model_accuracy_figure(summary: "pd.DataFrame") -> "go.Figure":
+    """多模型回测准确度对比柱状图。"""
+    _require_plotly()
+    df = summary.copy()
+    df = df[df["状态"] == "成功"].dropna(subset=["方向准确率"])
+    if df.empty:
+        raise ValueError("无成功模型可对比")
+
+    fig = make_subplots(
+        rows=1, cols=2, subplot_titles=("方向准确率", "预测收益%（未来）"),
+        horizontal_spacing=0.12,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=df["模型"], y=df["方向准确率"],
+            name="方向准确率", marker_color="#2563eb",
+            text=[f"{v:.1%}" for v in df["方向准确率"]],
+            textposition="outside",
+        ),
+        row=1, col=1,
+    )
+    pred_col = [c for c in df.columns if c.startswith("预测") and c.endswith("收益%")]
+    if pred_col:
+        vals = df[pred_col[0]].fillna(0)
+        colors = ["#22c55e" if v >= 0 else "#ef4444" for v in vals]
+        fig.add_trace(
+            go.Bar(
+                x=df["模型"], y=vals, name="预测收益%",
+                marker_color=colors,
+                text=[f"{v:+.2f}%" for v in vals],
+                textposition="outside",
+            ),
+            row=1, col=2,
+        )
+    fig.update_layout(
+        height=420, template="plotly_white", showlegend=False,
+        title="多模型回测准确度 & 未来收益预测对比",
+        margin=dict(l=40, r=20, t=70, b=80),
+    )
+    fig.update_yaxes(tickformat=".0%", row=1, col=1)
+    return fig
+
+
+def build_future_forecast_figure(
+    hist: "pd.DataFrame",
+    model_results: list,
+    code: str = "",
+    name: str = "",
+    forward_days: int = 5,
+    tail_days: int = 80,
+) -> "go.Figure":
+    """历史收盘价 + 各模型未来目标价预测射线。"""
+    _require_plotly()
+    g = hist.sort_values("date").tail(tail_days).copy()
+    title = f"{name}({code})" if name and name != code else code
+    last_date = pd.to_datetime(g["date"].iloc[-1])
+    last_close = float(g["close"].iloc[-1])
+    pred_dates = pd.date_range(last_date, periods=forward_days + 1, freq="B")[1:]
+    if len(pred_dates) == 0:
+        pred_dates = pd.DatetimeIndex([last_date + pd.Timedelta(days=forward_days)])
+
+    palette = [
+        "#ef4444", "#f59e0b", "#8b5cf6", "#0ea5e9",
+        "#22c55e", "#ec4899", "#14b8a6", "#a855f7",
+    ]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=g["date"], y=g["close"], name="历史收盘价",
+        line=dict(color="#2563eb", width=2),
+    ))
+
+    ok = [r for r in model_results if not getattr(r, "error", None) and getattr(r, "hist", None) is not None]
+    for i, r in enumerate(ok):
+        if getattr(r, "hist", pd.DataFrame()).empty and not getattr(r, "future_pred_close", None):
+            continue
+        pred_close = float(getattr(r, "future_pred_close", last_close))
+        pred_ret = float(getattr(r, "future_pred_return", 0.0))
+        ys = np.linspace(last_close, pred_close, len(pred_dates) + 1)[1:]
+        color = palette[i % len(palette)]
+        label = getattr(r, "label", getattr(r, "key", f"model{i}"))
+        fig.add_trace(go.Scatter(
+            x=[last_date] + list(pred_dates),
+            y=[last_close] + list(ys),
+            name=f"{label} {pred_ret*100:+.2f}% → {pred_close:.2f}",
+            line=dict(color=color, width=2, dash="dash"),
+            mode="lines+markers",
+            marker=dict(size=6, symbol="diamond"),
+        ))
+
+    fig.update_layout(
+        height=480, template="plotly_white", hovermode="x unified",
+        title=f"{title} — 多模型未来 {forward_days} 日股价预测",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        margin=dict(l=50, r=30, t=80, b=40),
+        yaxis_title="价格",
+    )
+    return fig
+
+
+def build_multi_model_overlay_backtest(
+    model_results: list,
+    code: str = "",
+    name: str = "",
+    max_points: int = 40,
+) -> "go.Figure":
+    """多模型预测目标价叠加（与真实价对比）。"""
+    _require_plotly()
+    title = f"{name}({code})" if name and name != code else code
+    fig = go.Figure()
+    actual_drawn = False
+    palette = [
+        "#ef4444", "#f59e0b", "#8b5cf6", "#0ea5e9",
+        "#22c55e", "#ec4899", "#14b8a6", "#a855f7",
+    ]
+    for i, r in enumerate(model_results):
+        h = getattr(r, "hist", None)
+        if h is None or getattr(h, "empty", True) or getattr(r, "error", None):
+            continue
+        hh = h.tail(max_points)
+        if not actual_drawn:
+            fig.add_trace(go.Scatter(
+                x=hh["target_date"], y=hh["actual_close"],
+                name="真实目标价", line=dict(color="#2563eb", width=2.5),
+            ))
+            actual_drawn = True
+        fig.add_trace(go.Scatter(
+            x=hh["target_date"], y=hh["pred_close"],
+            name=getattr(r, "label", r.key),
+            line=dict(color=palette[i % len(palette)], width=1.5, dash="dot"),
+        ))
+    if not actual_drawn:
+        raise ValueError("无可用回测曲线")
+    fig.update_layout(
+        height=480, template="plotly_white", hovermode="x unified",
+        title=f"{title} — 多模型回测：预测目标价叠加",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        yaxis_title="价格",
+    )
+    return fig
+
+
 def save_stock_chart(
     df: pd.DataFrame,
     code: str,

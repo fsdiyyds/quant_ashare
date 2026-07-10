@@ -40,7 +40,7 @@ st.set_page_config(page_title="量化选股", page_icon="📈", layout="wide")
 st.title("A股量化选股 · 多模型组合")
 st.caption(
     "B1 / B2 / LightGBM / LSTM + Qlib 风格模型 Zoo · 自定义权重 · "
-    "每次运行自动拉取最新成交数据"
+    "单股多模型回测/预测 · 每次运行自动拉取最新成交数据"
 )
 
 
@@ -230,17 +230,16 @@ with st.sidebar:
 - **LGB / LSTM**：原生 ML
 - **Qlib Zoo**：Linear/Ridge/XGB/CatBoost/GRU/ALSTM/Transformer 等
 
-**组合示例**
-- 保守：仅 B1
-- 激进：B2 + LSTM + GRU
-- 研究：Qlib 表格全家桶
+**单股分析**
+- 打开「单股多模型分析」
+- 输入代码 → 多选模型 → 回测准确度 + 未来预测图
 
 > 仅供学习，不构成投资建议。
 """)
 
 
-tab_list, tab_chart, tab_run, tab_data = st.tabs(
-    ["推荐列表", "个股可视化", "模型组合 & 运行", "数据管理"]
+tab_list, tab_chart, tab_single, tab_run, tab_data = st.tabs(
+    ["推荐列表", "个股可视化", "单股多模型分析", "模型组合 & 运行", "数据管理"]
 )
 
 top50 = _load_csv("top50_latest.csv")
@@ -380,6 +379,151 @@ with tab_chart:
                     c5.metric("融合分", f"{row.get('ensemble_score', 0):.2f}")
             except ImportError:
                 st.error("请安装 plotly: pip install plotly")
+
+# ── 单股多模型分析 ──
+with tab_single:
+    st.subheader("输入股票代码 · 多模型回测与未来预测")
+    st.caption(
+        "对单只股票分别训练 LightGBM / Qlib 表格模型 / LSTM / GRU 等，"
+        "输出回测准确度对比图、预测目标价叠加图，以及未来 N 日股价预测。"
+    )
+
+    c1, c2, c3 = st.columns([1.2, 1.5, 1])
+    with c1:
+        code_in = st.text_input("股票代码", value="600519", placeholder="如 600519 / 000858")
+    with c2:
+        single_model_opts = {
+            "lgb": "LightGBM",
+            "ridge": "Qlib Ridge",
+            "lasso": "Qlib Lasso",
+            "elasticnet": "Qlib ElasticNet",
+            "rf": "Qlib RandomForest",
+            "xgb": "Qlib XGBoost",
+            "catboost": "Qlib CatBoost",
+            "double_ensemble": "Qlib DoubleEnsemble",
+            "lstm": "LSTM",
+            "gru": "Qlib GRU",
+            "alstm": "Qlib ALSTM",
+            "transformer": "Qlib Transformer",
+            "mlp_seq": "Qlib MLP(时序)",
+        }
+        default_sel = ["lgb", "ridge", "xgb", "lstm", "gru"]
+        selected_labels = st.multiselect(
+            "选择模型（可多选）",
+            options=list(single_model_opts.values()),
+            default=[single_model_opts[k] for k in default_sel if k in single_model_opts],
+        )
+        label_to_key = {v: k for k, v in single_model_opts.items()}
+        selected_keys = [label_to_key[x] for x in selected_labels]
+    with c3:
+        fwd = st.selectbox("预测天数", [3, 5, 10], index=1)
+        epochs_single = st.slider("时序训练轮数", 5, 25, 10, 1)
+
+    run_single = st.button("开始分析该股票", type="primary", disabled=not selected_keys)
+
+    if run_single:
+        code_clean = "".join(ch for ch in code_in if ch.isdigit()).zfill(6)
+        if len(code_clean) != 6:
+            st.error("请输入 6 位股票代码")
+        else:
+            with st.spinner(f"正在拉取 {code_clean} 行情并训练 {len(selected_keys)} 个模型..."):
+                try:
+                    from stock_analyzer import analyze_stock
+                    from visualize import (
+                        build_future_forecast_figure,
+                        build_model_backtest_figure,
+                        build_multi_model_accuracy_figure,
+                        build_multi_model_overlay_backtest,
+                    )
+
+                    result = analyze_stock(
+                        code_clean,
+                        model_keys=selected_keys,
+                        forward_days=int(fwd),
+                        epochs=int(epochs_single),
+                        force_refresh=True,
+                    )
+                    st.session_state["single_analysis"] = result
+                    st.success(
+                        f"{result.name}({result.code}) 分析完成 | "
+                        f"行情截至 {result.asof} | 最新收盘 {result.last_close:.2f}"
+                    )
+                except Exception as e:
+                    st.error(f"分析失败: {e}")
+                    st.session_state.pop("single_analysis", None)
+
+    result = st.session_state.get("single_analysis")
+    if result is not None:
+        st.markdown(f"### {result.name}（{result.code}）")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("最新收盘", f"{result.last_close:.2f}")
+        m2.metric("行情截至", result.asof)
+        ok_n = sum(1 for r in result.models if not r.error)
+        m3.metric("成功模型", f"{ok_n}/{len(result.models)}")
+        m4.metric("预测窗口", f"{result.forward_days} 日")
+
+        st.markdown("#### ① 多模型回测准确度 & 未来收益对比")
+        st.dataframe(result.summary, use_container_width=True, hide_index=True)
+        try:
+            from visualize import (
+                build_future_forecast_figure,
+                build_model_backtest_figure,
+                build_multi_model_accuracy_figure,
+                build_multi_model_overlay_backtest,
+            )
+            fig_acc = build_multi_model_accuracy_figure(result.summary)
+            st.plotly_chart(fig_acc, use_container_width=True)
+        except Exception as e:
+            st.warning(f"准确度对比图暂不可用: {e}")
+
+        st.markdown("#### ② 多模型回测：预测目标价叠加")
+        try:
+            fig_ov = build_multi_model_overlay_backtest(
+                result.models, code=result.code, name=result.name,
+            )
+            st.plotly_chart(fig_ov, use_container_width=True)
+        except Exception as e:
+            st.warning(f"叠加回测图暂不可用: {e}")
+
+        st.markdown("#### ③ 未来股价预测（各模型射线）")
+        try:
+            fig_fut = build_future_forecast_figure(
+                result.hist, result.models,
+                code=result.code, name=result.name,
+                forward_days=result.forward_days,
+            )
+            st.plotly_chart(fig_fut, use_container_width=True)
+        except Exception as e:
+            st.warning(f"未来预测图暂不可用: {e}")
+
+        st.markdown("#### ④ 分模型回测详情")
+        for r in result.models:
+            with st.expander(f"{r.label} — {'失败' if r.error else '成功'}", expanded=False):
+                if r.error:
+                    st.error(r.error)
+                    continue
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("方向准确率", f"{r.metrics.get('direction_accuracy', 0):.1%}")
+                c2.metric("均价误差", f"{r.metrics.get('mean_error_pct', 0):+.2f}%")
+                c3.metric("收益相关", f"{r.metrics.get('return_correlation', 0):.3f}")
+                c4.metric(
+                    f"预测{result.forward_days}日",
+                    f"{r.future_pred_return*100:+.2f}% → {r.future_pred_close:.2f}",
+                )
+                try:
+                    fig_one = build_model_backtest_figure(
+                        r.hist, r.label, code=result.code, name=result.name,
+                        forward_days=result.forward_days, metrics=r.metrics,
+                    )
+                    st.plotly_chart(fig_one, use_container_width=True)
+                except Exception as e:
+                    st.caption(f"单模型图不可用: {e}")
+
+        st.download_button(
+            "下载分析汇总 CSV",
+            result.summary.to_csv(index=False).encode("utf-8-sig"),
+            f"stock_analysis_{result.code}_{datetime.now():%Y%m%d}.csv",
+        )
 
 # ── 模型组合 & 运行 ──
 with tab_run:

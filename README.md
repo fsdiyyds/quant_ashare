@@ -119,12 +119,26 @@ quant_ashare/
 | Qlib 表格 | `linear` `ridge` `lasso` `elasticnet` `rf` `xgb` `catboost` `double_ensemble` |
 | Qlib 时序 | `gru` `alstm` `transformer` `mlp_seq` |
 
-```powershell
-# 每次运行默认增量拉取最新成交
-python -u b1_lstm_daily.py --max-stocks 150 --models b1,lgb,ridge,xgb --force-refresh
+### 单股多模型分析（回测图 + 未来预测图）
 
-# Streamlit：侧边栏可单独刷新行情；「模型组合」页勾选 Zoo
+Streamlit 打开 **「单股多模型分析」**：输入代码（如 `600519`）→ 勾选多种模型 → 输出：
+
+1. 各模型方向准确率 / 误差对比  
+2. 预测目标价 vs 真实价叠加回测图  
+3. 未来 N 日股价预测射线  
+4. 分模型详细回测曲线  
+
+```powershell
+# CLI 示例
+python -c "from stock_analyzer import analyze_stock; r=analyze_stock('600519', model_keys=['lgb','ridge','lstm','gru']); print(r.summary)"
+
+# Streamlit
 streamlit run streamlit_app.py
+```
+
+```powershell
+# 全市场组合选股（每次默认增量拉取最新成交）
+python -u b1_lstm_daily.py --max-stocks 150 --models b1,lgb,ridge,xgb --force-refresh
 ```
 
 完整 Qlib 平台（可选，非必须）：
