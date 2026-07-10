@@ -30,3 +30,5 @@ output/b1_lstm/top50_buy_*.csv
 output/b1_lstm/b1_pool_*.csv
 output/b1_lstm/report_*.md
 output/b1_lstm/b1_lstm_report_*.md
+
+.tmp_push_backup/
