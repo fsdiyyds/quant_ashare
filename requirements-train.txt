@@ -1,10 +1,4 @@
-# 完整训练依赖（本地 / GitHub Actions）
-# 建议 Python 3.10–3.12（TensorFlow 尚不支持 3.14）
+# 与 requirements.txt 相同入口（本地 / GitHub Actions 完整训练）
+# 建议 Python 3.10–3.12
 
 -r requirements.txt
-
-# LSTM / Qlib 时序模型
-tensorflow>=2.15.0,<2.20.0; python_version >= "3.9" and python_version < "3.13"
-
-# Qlib 风格表格增强
-catboost>=1.2.0; python_version >= "3.9" and python_version < "3.13"

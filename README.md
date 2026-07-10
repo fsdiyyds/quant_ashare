@@ -33,10 +33,10 @@ python b1_lstm_daily.py --max-stocks 200
 | **Google Colab** | 零部署手动跑 |
 | **Render Docker** | 容器托管 |
 
-**Streamlit 快速部署：** https://share.streamlit.io → Main file: `streamlit_app.py` → Python **3.11** → Secret: `QUANT_DATA_SOURCE=sina`  
+**Streamlit 快速部署：** https://share.streamlit.io → Main file: `streamlit_app.py` → Python **必须选 3.11 或 3.12** → Secret: `QUANT_DATA_SOURCE=sina`  
 仓库：https://github.com/fsdiyyds/quant_ashare  
 
-> Cloud 展示用 `requirements.txt`（无 TensorFlow）；完整训练用 `pip install -r requirements-train.txt`（需 Python ≤3.12）。
+> TensorFlow 已写回 `requirements.txt`，但仅在 Python &lt; 3.13 时安装。选 3.14 会装不上 TF，LSTM/GRU 等时序模型不可用。
 
 ---
 

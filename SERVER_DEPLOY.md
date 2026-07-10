@@ -160,9 +160,9 @@ QUANT_DATA_SOURCE = "sina"
 ```
 
 > 若日志出现 `No matching distribution found for tensorflow`：  
-> 1）确认已推送最新 `requirements.txt`（已不含 TF）；  
-> 2）Streamlit 控制台 → Manage app → Reboot / Redeploy；  
-> 3）Advanced settings 把 Python 改为 3.11。
+> **原因是 Python 选成了 3.14**（TF 暂无 3.14 包）。  
+> 解决：Advanced settings 改为 **3.11 或 3.12** → Redeploy / Reboot。  
+> 不要删掉 TensorFlow；模型（LSTM/GRU/ALSTM/Transformer）依赖它。
 
 本地预览：
 
